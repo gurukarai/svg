@@ -259,7 +259,7 @@ function renderSvgToPng(svgContent: string, width: number): Promise<Blob> {
       canvas.toBlob(blob => {
         if (blob) resolve(blob);
         else reject(new Error('Failed to render PNG'));
-      }, 'image/png');
+      }, 'image/jpeg', 0.97);
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
@@ -276,69 +276,100 @@ async function buildPdfBundle(pngBlobs: Blob[], width: number): Promise<Blob> {
   const pdfWidth = 595;
   const pdfHeight = Math.round(pdfWidth * aspectRatio);
 
-  const dataUrls: string[] = await Promise.all(
-    pngBlobs.map(blob => new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    }))
+  const imgByteArrays: Uint8Array[] = await Promise.all(
+    pngBlobs.map(blob => blob.arrayBuffer().then(buf => new Uint8Array(buf)))
   );
 
-  const pages = dataUrls.map((dataUrl, i) => {
-    const base64 = dataUrl.split(',')[1];
-    const streamData = `/Page${i + 1}Img Do`;
+  const enc = new TextEncoder();
 
-    return {
-      base64,
-      streamData,
-    };
-  });
+  type Part = Uint8Array | string;
 
-  const objectLines: string[] = [];
+  const parts: Part[] = [];
   const offsets: number[] = [];
   let byteOffset = 0;
 
-  const addObject = (content: string): number => {
-    const objNum = objectLines.length + 1;
-    const line = `${objNum} 0 obj\n${content}\nendobj\n`;
-    offsets.push(byteOffset);
-    byteOffset += new TextEncoder().encode(line).length;
-    objectLines.push(line);
-    return objNum;
+  const addBytes = (data: Uint8Array | string) => {
+    parts.push(data);
+    byteOffset += typeof data === 'string' ? enc.encode(data).length : data.byteLength;
   };
 
-  const catalogObj = addObject(`<< /Type /Catalog /Pages 2 0 R >>`);
-  const pagesObj = addObject(`<< /Type /Pages /Kids [${pages.map((_, i) => `${3 + i * 3} 0 R`).join(' ')}] /Count ${pages.length} >>`);
+  const objOffsets: number[] = [];
 
-  for (let i = 0; i < pages.length; i++) {
-    const imgObjNum = 3 + i * 3 + 1;
-    const contentsObjNum = 3 + i * 3 + 2;
+  const beginObj = (n: number) => {
+    objOffsets[n] = byteOffset;
+    addBytes(`${n} 0 obj\n`);
+  };
+  const endObj = () => addBytes(`endobj\n`);
 
-    addObject(
-      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pdfWidth} ${pdfHeight}] /Resources << /XObject << /Page${i + 1}Img ${imgObjNum} 0 R >> >> /Contents ${contentsObjNum} 0 R >>`
+  const header = `%PDF-1.4\n%\xFF\xFF\xFF\xFF\n`;
+  addBytes(header);
+
+  const totalObjs = 2 + pngBlobs.length * 3;
+
+  beginObj(1);
+  addBytes(`<< /Type /Catalog /Pages 2 0 R >>\n`);
+  endObj();
+
+  const kidRefs = pngBlobs.map((_, i) => `${3 + i * 3} 0 R`).join(' ');
+  beginObj(2);
+  addBytes(`<< /Type /Pages /Kids [${kidRefs}] /Count ${pngBlobs.length} >>\n`);
+  endObj();
+
+  for (let i = 0; i < pngBlobs.length; i++) {
+    const pageObj = 3 + i * 3;
+    const imgObj = pageObj + 1;
+    const contentsObj = pageObj + 2;
+    const imgName = `Im${i + 1}`;
+
+    beginObj(pageObj);
+    addBytes(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pdfWidth} ${pdfHeight}]\n` +
+      `/Resources << /XObject << /${imgName} ${imgObj} 0 R >> >>\n` +
+      `/Contents ${contentsObj} 0 R >>\n`
     );
+    endObj();
 
-    const imgBytes = Uint8Array.from(atob(pages[i].base64), c => c.charCodeAt(0));
-    addObject(
-      `<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${imgBytes.length} >>\nstream\n${pages[i].base64}\nendstream`
+    const imgData = imgByteArrays[i];
+    beginObj(imgObj);
+    addBytes(
+      `<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height}\n` +
+      `/ColorSpace /DeviceRGB /BitsPerComponent 8\n` +
+      `/Filter /DCTDecode /Length ${imgData.byteLength} >>\n` +
+      `stream\n`
     );
+    addBytes(imgData);
+    addBytes(`\nendstream\n`);
+    endObj();
 
-    const streamContent = `q ${pdfWidth} 0 0 ${pdfHeight} 0 0 cm /Page${i + 1}Img Do Q`;
-    const streamBytes = new TextEncoder().encode(streamContent);
-    addObject(
-      `<< /Length ${streamBytes.length} >>\nstream\n${streamContent}\nendstream`
-    );
+    const streamContent = `q ${pdfWidth} 0 0 ${pdfHeight} 0 0 cm /${imgName} Do Q`;
+    const streamBytes = enc.encode(streamContent);
+    beginObj(contentsObj);
+    addBytes(`<< /Length ${streamBytes.byteLength} >>\nstream\n`);
+    addBytes(streamBytes);
+    addBytes(`\nendstream\n`);
+    endObj();
   }
 
-  const xrefOffset = byteOffset;
-  const header = `%PDF-1.4\n`;
-  const body = objectLines.join('');
-  const xref = `xref\n0 ${objectLines.length + 1}\n0000000000 65535 f \n${offsets.map(o => (o + header.length).toString().padStart(10, '0') + ' 00000 n ').join('\n')}\n`;
-  const trailer = `trailer\n<< /Size ${objectLines.length + 1} /Root ${catalogObj} 0 R >>\nstartxref\n${xrefOffset + header.length + body.length}\n%%EOF`;
+  const xrefPos = byteOffset;
+  const xrefEntries = [`0000000000 65535 f \n`];
+  for (let n = 1; n <= totalObjs; n++) {
+    xrefEntries.push(`${objOffsets[n].toString().padStart(10, '0')} 00000 n \n`);
+  }
+  addBytes(`xref\n0 ${totalObjs + 1}\n${xrefEntries.join('')}`);
+  addBytes(`trailer\n<< /Size ${totalObjs + 1} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF\n`);
 
-  const pdfText = header + body + xref + trailer;
-  return new Blob([pdfText], { type: 'application/pdf' });
+  const allBytes: Uint8Array[] = parts.map(p =>
+    typeof p === 'string' ? enc.encode(p) : p
+  );
+  const totalLen = allBytes.reduce((s, b) => s + b.byteLength, 0);
+  const out = new Uint8Array(totalLen);
+  let pos = 0;
+  for (const b of allBytes) {
+    out.set(b, pos);
+    pos += b.byteLength;
+  }
+
+  return new Blob([out], { type: 'application/pdf' });
 }
 
 export default App;
