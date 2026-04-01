@@ -1,9 +1,15 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { FileText, Image as ImageIcon, Download, CheckCircle, Loader2, RotateCcw } from 'lucide-react';
+import * as pdfjsLib from 'pdfjs-dist';
 import FileUploader from './components/FileUploader';
 import ProcessingStatus from './components/ProcessingStatus';
 import CanvasPreview, { CANVAS_W_MM, CANVAS_H_MM, PDF_HALF_W_MM } from './components/CanvasPreview';
 import PositionControls from './components/PositionControls';
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.mjs',
+  import.meta.url
+).toString();
 
 interface ProcessingStep {
   name: string;
@@ -36,8 +42,24 @@ function readFileAsDataUrl(file: File): Promise<string> {
 }
 
 async function extractPdfFirstPage(pdfFile: File): Promise<HTMLImageElement> {
-  const dataUrl = await readFileAsDataUrl(pdfFile);
-  return loadImage(dataUrl);
+  const arrayBuffer = await pdfFile.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const page = await pdf.getPage(1);
+
+  const viewport = page.getViewport({ scale: 3 });
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  const ctx = canvas.getContext('2d')!;
+
+  await page.render({ canvasContext: ctx, viewport }).promise;
+
+  return new Promise((resolve, reject) => {
+    const img = new window.Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = canvas.toDataURL('image/png');
+  });
 }
 
 function removeWhiteBackground(src: HTMLImageElement): HTMLImageElement {
