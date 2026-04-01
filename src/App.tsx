@@ -62,16 +62,18 @@ async function extractPdfFirstPage(pdfFile: File): Promise<HTMLImageElement> {
   });
 }
 
-function removeWhiteBackground(src: HTMLImageElement): HTMLImageElement {
+function removeWhiteBackground(src: HTMLImageElement): Promise<HTMLImageElement> {
   const canvas = document.createElement('canvas');
-  canvas.width = src.width || src.naturalWidth;
-  canvas.height = src.height || src.naturalHeight;
-  if (canvas.width === 0 || canvas.height === 0) {
-    return src;
+  const w = src.naturalWidth || src.width;
+  const h = src.naturalHeight || src.height;
+  if (w === 0 || h === 0) {
+    return Promise.resolve(src);
   }
+  canvas.width = w;
+  canvas.height = h;
   const ctx = canvas.getContext('2d')!;
   ctx.drawImage(src, 0, 0);
-  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const imageData = ctx.getImageData(0, 0, w, h);
   const data = imageData.data;
   for (let i = 0; i < data.length; i += 4) {
     const r = data[i];
@@ -83,9 +85,12 @@ function removeWhiteBackground(src: HTMLImageElement): HTMLImageElement {
   }
   ctx.putImageData(imageData, 0, 0);
 
-  const result = new window.Image();
-  result.src = canvas.toDataURL('image/png');
-  return result;
+  return new Promise((resolve, reject) => {
+    const result = new window.Image();
+    result.onload = () => resolve(result);
+    result.onerror = reject;
+    result.src = canvas.toDataURL('image/png');
+  });
 }
 
 async function renderComposite(
@@ -244,10 +249,10 @@ export default function App() {
       return;
     }
     const idx = Math.min(previewPdfIndex, pdfFiles.length - 1);
-    extractPdfFirstPage(pdfFiles[idx]).then(img => {
-      const stripped = removeWhiteBackground(img);
-      setPdfPreviewImg(stripped);
-    }).catch(() => setPdfPreviewImg(null));
+    extractPdfFirstPage(pdfFiles[idx])
+      .then(img => removeWhiteBackground(img))
+      .then(setPdfPreviewImg)
+      .catch(() => setPdfPreviewImg(null));
   }, [pdfFiles, previewPdfIndex]);
 
   const updateStep = (index: number, status: ProcessingStep['status'], message?: string) => {
@@ -293,7 +298,7 @@ export default function App() {
       updateStep(1, 'complete');
 
       updateStep(2, 'processing');
-      const strippedImages = rawPageImages.map(img => removeWhiteBackground(img));
+      const strippedImages = await Promise.all(rawPageImages.map(img => removeWhiteBackground(img)));
       await new Promise(r => setTimeout(r, 200));
       updateStep(2, 'complete');
 
