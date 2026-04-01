@@ -6,7 +6,7 @@ import ProcessingStatus from './components/ProcessingStatus';
 import CanvasPreview from './components/CanvasPreview';
 import PositionControls from './components/PositionControls';
 import ConfigPanel from './components/ConfigPanel';
-import { getPaperSize, DEFAULT_PAPER_SIZE_ID } from './lib/paperSizes';
+import { getPaperSize, getCanvasDimensions, DEFAULT_PAPER_SIZE_ID, DEFAULT_ORIENTATION, Orientation } from './lib/paperSizes';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.mjs',
@@ -221,14 +221,14 @@ export default function App() {
   const [offsetX, setOffsetX] = useState(0);
   const [offsetY, setOffsetY] = useState(0);
   const [paperSizeId, setPaperSizeId] = useState(DEFAULT_PAPER_SIZE_ID);
+  const [orientation, setOrientation] = useState<Orientation>(DEFAULT_ORIENTATION);
   const [isProcessing, setIsProcessing] = useState(false);
   const [steps, setSteps] = useState<ProcessingStep[]>([]);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const compositeCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const paperSize = getPaperSize(paperSizeId);
-  const canvasWMm = paperSize.widthMm;
-  const canvasHMm = paperSize.heightMm;
+  const { widthMm: canvasWMm, heightMm: canvasHMm } = getCanvasDimensions(paperSize, orientation);
   const canvasWPx = Math.round(canvasWMm * MM_TO_INCH * DPI);
   const canvasHPx = Math.round(canvasHMm * MM_TO_INCH * DPI);
 
@@ -418,7 +418,9 @@ export default function App() {
 
             <ConfigPanel
               paperSizeId={paperSizeId}
+              orientation={orientation}
               onPaperSizeChange={setPaperSizeId}
+              onOrientationChange={setOrientation}
               disabled={isProcessing}
             />
 
