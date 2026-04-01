@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
-import { FileText, Image, Download, CheckCircle, Loader2, RotateCcw } from 'lucide-react';
+import { FileText, Image as ImageIcon, Download, CheckCircle, Loader2, RotateCcw } from 'lucide-react';
 import FileUploader from './components/FileUploader';
 import ProcessingStatus from './components/ProcessingStatus';
 import CanvasPreview, { CANVAS_W_MM, CANVAS_H_MM, PDF_HALF_W_MM } from './components/CanvasPreview';
@@ -19,7 +19,7 @@ const PDF_HALF_W_PX = Math.round(PDF_HALF_W_MM * MM_TO_INCH * DPI);
 
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
-    const img = new Image();
+    const img = new window.Image();
     img.onload = () => resolve(img);
     img.onerror = reject;
     img.src = src;
@@ -61,7 +61,7 @@ function removeWhiteBackground(src: HTMLImageElement): HTMLImageElement {
   }
   ctx.putImageData(imageData, 0, 0);
 
-  const result = new Image();
+  const result = new window.Image();
   result.src = canvas.toDataURL('image/png');
   return result;
 }
@@ -384,7 +384,7 @@ export default function App() {
           <div className="space-y-5">
             <FileUploader
               title="Background Image (13 \u00d7 19 in)"
-              icon={Image}
+              icon={ImageIcon}
               accept=".jpg,.jpeg,.png"
               multiple={false}
               files={backgroundFile ? [backgroundFile] : []}
