@@ -1,8 +1,9 @@
-import { useState } from 'react';
-import { FileText, Image, Settings, Download, CheckCircle, Loader2 } from 'lucide-react';
+import { useState, useCallback, useRef, useEffect } from 'react';
+import { FileText, Image, Download, CheckCircle, Loader2, RotateCcw } from 'lucide-react';
 import FileUploader from './components/FileUploader';
-import ConfigPanel from './components/ConfigPanel';
 import ProcessingStatus from './components/ProcessingStatus';
+import CanvasPreview, { CANVAS_W_MM, CANVAS_H_MM, PDF_HALF_W_MM } from './components/CanvasPreview';
+import PositionControls from './components/PositionControls';
 
 interface ProcessingStep {
   name: string;
@@ -10,205 +11,19 @@ interface ProcessingStep {
   message?: string;
 }
 
-function App() {
-  const [pdfFiles, setPdfFiles] = useState<File[]>([]);
-  const [svgTemplate, setSvgTemplate] = useState<File | null>(null);
-  const [renderWidth, setRenderWidth] = useState(5700);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [steps, setSteps] = useState<ProcessingStep[]>([]);
-  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+const DPI = 300;
+const MM_TO_INCH = 1 / 25.4;
+const CANVAS_W_PX = Math.round(CANVAS_W_MM * MM_TO_INCH * DPI);
+const CANVAS_H_PX = Math.round(CANVAS_H_MM * MM_TO_INCH * DPI);
+const PDF_HALF_W_PX = Math.round(PDF_HALF_W_MM * MM_TO_INCH * DPI);
 
-  const updateStep = (index: number, status: ProcessingStep['status'], message?: string) => {
-    setSteps(prev => prev.map((step, i) =>
-      i === index ? { ...step, status, ...(message ? { message } : {}) } : step
-    ));
-  };
-
-  const handleProcess = async () => {
-    if (pdfFiles.length === 0 || !svgTemplate) {
-      alert('Please upload PDF files and an SVG template');
-      return;
-    }
-
-    setIsProcessing(true);
-    setDownloadUrl(null);
-
-    const initialSteps: ProcessingStep[] = [
-      { name: 'Reading PDF files', status: 'pending' },
-      { name: 'Extracting first pages', status: 'pending' },
-      { name: 'Applying SVG template', status: 'pending' },
-      { name: 'Rendering high-resolution PNGs', status: 'pending' },
-      { name: 'Creating final PDF bundle', status: 'pending' },
-    ];
-    setSteps(initialSteps);
-
-    try {
-      updateStep(0, 'processing');
-      const svgContent = await svgTemplate.text();
-      await new Promise(r => setTimeout(r, 300));
-      updateStep(0, 'complete');
-
-      updateStep(1, 'processing');
-      const pageImages: string[] = [];
-
-      for (let i = 0; i < pdfFiles.length; i++) {
-        const dataUrl = await readFileAsDataUrl(pdfFiles[i]);
-        pageImages.push(dataUrl);
-      }
-      await new Promise(r => setTimeout(r, 300));
-      updateStep(1, 'complete');
-
-      updateStep(2, 'processing');
-      const templatedImages: string[] = [];
-
-      for (const imgDataUrl of pageImages) {
-        const templated = await applyTemplate(svgContent, imgDataUrl, renderWidth);
-        templatedImages.push(templated);
-      }
-      await new Promise(r => setTimeout(r, 300));
-      updateStep(2, 'complete');
-
-      updateStep(3, 'processing');
-      const pngBlobs: Blob[] = [];
-
-      for (const svgData of templatedImages) {
-        const png = await renderSvgToPng(svgData, renderWidth);
-        pngBlobs.push(png);
-      }
-      await new Promise(r => setTimeout(r, 300));
-      updateStep(3, 'complete');
-
-      updateStep(4, 'processing');
-      const finalPdfBlob = await buildPdfBundle(pngBlobs, renderWidth);
-      await new Promise(r => setTimeout(r, 300));
-      updateStep(4, 'complete');
-
-      const url = URL.createObjectURL(finalPdfBlob);
-      setDownloadUrl(url);
-
-    } catch (error) {
-      setSteps(prev => prev.map(step =>
-        step.status === 'processing'
-          ? { ...step, status: 'error', message: error instanceof Error ? error.message : 'Processing failed' }
-          : step
-      ));
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  const handleReset = () => {
-    if (downloadUrl) URL.revokeObjectURL(downloadUrl);
-    setPdfFiles([]);
-    setSvgTemplate(null);
-    setSteps([]);
-    setDownloadUrl(null);
-    setIsProcessing(false);
-  };
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-      <div className="container mx-auto px-4 py-8 max-w-7xl">
-        <header className="mb-12 text-center">
-          <div className="flex items-center justify-center mb-4">
-            <FileText className="w-12 h-12 text-blue-600" />
-          </div>
-          <h1 className="text-4xl font-bold text-slate-800 mb-2">
-            PDF Workflow Processor
-          </h1>
-          <p className="text-slate-600 text-lg">
-            Transform PDFs into high-resolution print files with SVG templating
-          </p>
-        </header>
-
-        <div className="grid lg:grid-cols-3 gap-8 mb-8">
-          <div className="lg:col-span-2 space-y-6">
-            <FileUploader
-              title="Upload PDF Files"
-              icon={FileText}
-              accept=".pdf"
-              multiple
-              files={pdfFiles}
-              onFilesChange={setPdfFiles}
-              disabled={isProcessing}
-            />
-
-            <FileUploader
-              title="Upload SVG Template"
-              icon={Image}
-              accept=".svg"
-              multiple={false}
-              files={svgTemplate ? [svgTemplate] : []}
-              onFilesChange={(files) => setSvgTemplate(files[0] || null)}
-              disabled={isProcessing}
-            />
-          </div>
-
-          <div className="space-y-6">
-            <ConfigPanel
-              renderWidth={renderWidth}
-              onRenderWidthChange={setRenderWidth}
-              disabled={isProcessing}
-            />
-
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
-              <h3 className="font-semibold text-slate-800 mb-4 flex items-center gap-2">
-                <Settings className="w-5 h-5" />
-                Actions
-              </h3>
-
-              <div className="space-y-3">
-                <button
-                  onClick={handleProcess}
-                  disabled={isProcessing || pdfFiles.length === 0 || !svgTemplate}
-                  className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
-                >
-                  {isProcessing ? (
-                    <>
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                      Processing...
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle className="w-5 h-5" />
-                      Start Processing
-                    </>
-                  )}
-                </button>
-
-                {downloadUrl && (
-                  <a
-                    href={downloadUrl}
-                    download="final_bundle.pdf"
-                    className="w-full bg-green-600 hover:bg-green-700 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2 block text-center"
-                  >
-                    <Download className="w-5 h-5 inline mr-1" />
-                    Download Result
-                  </a>
-                )}
-
-                <button
-                  onClick={handleReset}
-                  disabled={isProcessing}
-                  className="w-full bg-slate-200 hover:bg-slate-300 disabled:bg-slate-100 disabled:cursor-not-allowed text-slate-700 font-medium py-3 px-4 rounded-lg transition-colors"
-                >
-                  Reset
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {steps.length > 0 && (
-          <ProcessingStatus steps={steps} />
-        )}
-
-        <footer className="mt-12 text-center text-sm text-slate-500">
-          <p>All processing happens locally in your browser — no files are uploaded to any server</p>
-        </footer>
-      </div>
-    </div>
-  );
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -220,80 +35,89 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
-async function applyTemplate(svgContent: string, imageDataUrl: string, width: number): Promise<string> {
-  const aspectRatio = 1.414;
-  const height = Math.round(width / aspectRatio);
-
-  const hasImagePlaceholder = svgContent.includes('{{IMAGE}}') || svgContent.includes('data:image');
-
-  let finalSvg = svgContent;
-
-  if (hasImagePlaceholder) {
-    finalSvg = svgContent.replace(/\{\{IMAGE\}\}/g, imageDataUrl);
-  } else {
-    const imageTag = `<image href="${imageDataUrl}" x="0" y="0" width="${width}" height="${height}" preserveAspectRatio="xMidYMid meet"/>`;
-    finalSvg = svgContent.replace(/<svg([^>]*)>/, `<svg$1>${imageTag}`);
-  }
-
-  return finalSvg;
+async function extractPdfFirstPage(pdfFile: File): Promise<HTMLImageElement> {
+  const dataUrl = await readFileAsDataUrl(pdfFile);
+  return loadImage(dataUrl);
 }
 
-function renderSvgToPng(svgContent: string, width: number): Promise<Blob> {
+function removeWhiteBackground(src: HTMLImageElement): HTMLImageElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = src.width || src.naturalWidth;
+  canvas.height = src.height || src.naturalHeight;
+  if (canvas.width === 0 || canvas.height === 0) {
+    return src;
+  }
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(src, 0, 0);
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    if (r > 240 && g > 240 && b > 240) {
+      data[i + 3] = 0;
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+
+  const result = new Image();
+  result.src = canvas.toDataURL('image/png');
+  return result;
+}
+
+async function renderComposite(
+  backgroundImage: HTMLImageElement | null,
+  pdfPageImage: HTMLImageElement | null,
+  offsetX: number,
+  offsetY: number
+): Promise<Blob> {
+  const canvas = document.createElement('canvas');
+  canvas.width = CANVAS_W_PX;
+  canvas.height = CANVAS_H_PX;
+  const ctx = canvas.getContext('2d')!;
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, CANVAS_W_PX, CANVAS_H_PX);
+
+  if (backgroundImage) {
+    ctx.drawImage(backgroundImage, 0, 0, CANVAS_W_PX, CANVAS_H_PX);
+  }
+
+  if (pdfPageImage) {
+    const offsetXpx = Math.round(offsetX * MM_TO_INCH * DPI);
+    const offsetYpx = Math.round(offsetY * MM_TO_INCH * DPI);
+    const pdfX = PDF_HALF_W_PX + offsetXpx;
+    const pdfY = offsetYpx;
+    ctx.drawImage(pdfPageImage, pdfX, pdfY, PDF_HALF_W_PX, CANVAS_H_PX);
+  }
+
   return new Promise((resolve, reject) => {
-    const aspectRatio = 1.414;
-    const height = Math.round(width / aspectRatio);
-
-    const svgBlob = new Blob([svgContent], { type: 'image/svg+xml' });
-    const url = URL.createObjectURL(svgBlob);
-
-    const img = document.createElement('img');
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d')!;
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, width, height);
-      ctx.drawImage(img, 0, 0, width, height);
-      URL.revokeObjectURL(url);
-      canvas.toBlob(blob => {
-        if (blob) resolve(blob);
-        else reject(new Error('Failed to render PNG'));
-      }, 'image/jpeg', 0.97);
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error('Failed to load SVG for rendering'));
-    };
-    img.src = url;
+    canvas.toBlob(blob => {
+      if (blob) resolve(blob);
+      else reject(new Error('Failed to render composite'));
+    }, 'image/jpeg', 0.97);
   });
 }
 
-async function buildPdfBundle(pngBlobs: Blob[], width: number): Promise<Blob> {
-  const aspectRatio = 1.414;
-  const height = Math.round(width / aspectRatio);
-
-  const pdfWidth = 595;
-  const pdfHeight = Math.round(pdfWidth * aspectRatio);
+async function buildPdfBundle(jpegBlobs: Blob[]): Promise<Blob> {
+  const pdfWidth = Math.round(CANVAS_W_MM * (72 / 25.4));
+  const pdfHeight = Math.round(CANVAS_H_MM * (72 / 25.4));
 
   const imgByteArrays: Uint8Array[] = await Promise.all(
-    pngBlobs.map(blob => blob.arrayBuffer().then(buf => new Uint8Array(buf)))
+    jpegBlobs.map(blob => blob.arrayBuffer().then(buf => new Uint8Array(buf)))
   );
 
   const enc = new TextEncoder();
-
   type Part = Uint8Array | string;
-
   const parts: Part[] = [];
-  const offsets: number[] = [];
   let byteOffset = 0;
+  const objOffsets: number[] = [];
 
   const addBytes = (data: Uint8Array | string) => {
     parts.push(data);
     byteOffset += typeof data === 'string' ? enc.encode(data).length : data.byteLength;
   };
-
-  const objOffsets: number[] = [];
 
   const beginObj = (n: number) => {
     objOffsets[n] = byteOffset;
@@ -301,21 +125,20 @@ async function buildPdfBundle(pngBlobs: Blob[], width: number): Promise<Blob> {
   };
   const endObj = () => addBytes(`endobj\n`);
 
-  const header = `%PDF-1.4\n%\xFF\xFF\xFF\xFF\n`;
-  addBytes(header);
+  addBytes(`%PDF-1.4\n%\xFF\xFF\xFF\xFF\n`);
 
-  const totalObjs = 2 + pngBlobs.length * 3;
+  const totalObjs = 2 + jpegBlobs.length * 3;
 
   beginObj(1);
   addBytes(`<< /Type /Catalog /Pages 2 0 R >>\n`);
   endObj();
 
-  const kidRefs = pngBlobs.map((_, i) => `${3 + i * 3} 0 R`).join(' ');
+  const kidRefs = jpegBlobs.map((_, i) => `${3 + i * 3} 0 R`).join(' ');
   beginObj(2);
-  addBytes(`<< /Type /Pages /Kids [${kidRefs}] /Count ${pngBlobs.length} >>\n`);
+  addBytes(`<< /Type /Pages /Kids [${kidRefs}] /Count ${jpegBlobs.length} >>\n`);
   endObj();
 
-  for (let i = 0; i < pngBlobs.length; i++) {
+  for (let i = 0; i < jpegBlobs.length; i++) {
     const pageObj = 3 + i * 3;
     const imgObj = pageObj + 1;
     const contentsObj = pageObj + 2;
@@ -332,7 +155,7 @@ async function buildPdfBundle(pngBlobs: Blob[], width: number): Promise<Blob> {
     const imgData = imgByteArrays[i];
     beginObj(imgObj);
     addBytes(
-      `<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height}\n` +
+      `<< /Type /XObject /Subtype /Image /Width ${CANVAS_W_PX} /Height ${CANVAS_H_PX}\n` +
       `/ColorSpace /DeviceRGB /BitsPerComponent 8\n` +
       `/Filter /DCTDecode /Length ${imgData.byteLength} >>\n` +
       `stream\n`
@@ -372,4 +195,268 @@ async function buildPdfBundle(pngBlobs: Blob[], width: number): Promise<Blob> {
   return new Blob([out], { type: 'application/pdf' });
 }
 
-export default App;
+export default function App() {
+  const [pdfFiles, setPdfFiles] = useState<File[]>([]);
+  const [backgroundFile, setBackgroundFile] = useState<File | null>(null);
+  const [backgroundImg, setBackgroundImg] = useState<HTMLImageElement | null>(null);
+  const [pdfPreviewImg, setPdfPreviewImg] = useState<HTMLImageElement | null>(null);
+  const [previewPdfIndex, setPreviewPdfIndex] = useState(0);
+  const [offsetX, setOffsetX] = useState(0);
+  const [offsetY, setOffsetY] = useState(0);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [steps, setSteps] = useState<ProcessingStep[]>([]);
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const compositeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    if (!backgroundFile) {
+      setBackgroundImg(null);
+      return;
+    }
+    readFileAsDataUrl(backgroundFile).then(url => loadImage(url)).then(setBackgroundImg);
+  }, [backgroundFile]);
+
+  useEffect(() => {
+    if (pdfFiles.length === 0) {
+      setPdfPreviewImg(null);
+      return;
+    }
+    const idx = Math.min(previewPdfIndex, pdfFiles.length - 1);
+    extractPdfFirstPage(pdfFiles[idx]).then(img => {
+      const stripped = removeWhiteBackground(img);
+      setPdfPreviewImg(stripped);
+    }).catch(() => setPdfPreviewImg(null));
+  }, [pdfFiles, previewPdfIndex]);
+
+  const updateStep = (index: number, status: ProcessingStep['status'], message?: string) => {
+    setSteps(prev => prev.map((step, i) =>
+      i === index ? { ...step, status, ...(message ? { message } : {}) } : step
+    ));
+  };
+
+  const handleProcess = async () => {
+    if (pdfFiles.length === 0) {
+      alert('Please upload at least one PDF file');
+      return;
+    }
+
+    setIsProcessing(true);
+    setDownloadUrl(null);
+
+    const initialSteps: ProcessingStep[] = [
+      { name: 'Loading background image', status: 'pending' },
+      { name: 'Extracting PDF first pages', status: 'pending' },
+      { name: 'Removing white backgrounds', status: 'pending' },
+      { name: 'Rendering composites at 300 DPI', status: 'pending' },
+      { name: 'Building final PDF bundle', status: 'pending' },
+    ];
+    setSteps(initialSteps);
+
+    try {
+      updateStep(0, 'processing');
+      let bgImg: HTMLImageElement | null = backgroundImg;
+      if (!bgImg && backgroundFile) {
+        const url = await readFileAsDataUrl(backgroundFile);
+        bgImg = await loadImage(url);
+      }
+      await new Promise(r => setTimeout(r, 200));
+      updateStep(0, 'complete');
+
+      updateStep(1, 'processing');
+      const rawPageImages: HTMLImageElement[] = [];
+      for (const pdfFile of pdfFiles) {
+        const img = await extractPdfFirstPage(pdfFile);
+        rawPageImages.push(img);
+      }
+      updateStep(1, 'complete');
+
+      updateStep(2, 'processing');
+      const strippedImages = rawPageImages.map(img => removeWhiteBackground(img));
+      await new Promise(r => setTimeout(r, 200));
+      updateStep(2, 'complete');
+
+      updateStep(3, 'processing');
+      const compositeBlobs: Blob[] = [];
+      for (const pageImg of strippedImages) {
+        const blob = await renderComposite(bgImg, pageImg, offsetX, offsetY);
+        compositeBlobs.push(blob);
+      }
+      updateStep(3, 'complete');
+
+      updateStep(4, 'processing');
+      const finalPdf = await buildPdfBundle(compositeBlobs);
+      await new Promise(r => setTimeout(r, 200));
+      updateStep(4, 'complete');
+
+      const url = URL.createObjectURL(finalPdf);
+      setDownloadUrl(url);
+    } catch (error) {
+      setSteps(prev => prev.map(step =>
+        step.status === 'processing'
+          ? { ...step, status: 'error', message: error instanceof Error ? error.message : 'Processing failed' }
+          : step
+      ));
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleReset = () => {
+    if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+    setPdfFiles([]);
+    setBackgroundFile(null);
+    setBackgroundImg(null);
+    setPdfPreviewImg(null);
+    setOffsetX(0);
+    setOffsetY(0);
+    setSteps([]);
+    setDownloadUrl(null);
+    setIsProcessing(false);
+    setPreviewPdfIndex(0);
+  };
+
+  const handleCompositeReady = useCallback((canvas: HTMLCanvasElement) => {
+    compositeCanvasRef.current = canvas;
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
+      <div className="container mx-auto px-4 py-8 max-w-7xl">
+        <header className="mb-10 text-center">
+          <div className="flex items-center justify-center mb-4">
+            <FileText className="w-11 h-11 text-blue-600" />
+          </div>
+          <h1 className="text-4xl font-bold text-slate-800 mb-2">
+            Book Cover Compositor
+          </h1>
+          <p className="text-slate-500 text-base">
+            Compose PDF covers onto a 297 &times; 210 mm (A4 landscape) print canvas at 300 DPI
+          </p>
+        </header>
+
+        <div className="grid lg:grid-cols-3 gap-8 mb-8">
+          <div className="lg:col-span-2 space-y-6">
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+              <h2 className="font-semibold text-slate-800 mb-1 flex items-center gap-2 text-lg">
+                Preview
+              </h2>
+              <p className="text-xs text-slate-400 mb-4">
+                Background (left) + PDF cover page (right) &mdash; dashed line marks the center fold
+              </p>
+              <CanvasPreview
+                backgroundImage={backgroundImg}
+                pdfPageImage={pdfPreviewImg}
+                offsetX={offsetX}
+                offsetY={offsetY}
+                onCompositeReady={handleCompositeReady}
+              />
+              {pdfFiles.length > 1 && (
+                <div className="mt-3 flex items-center gap-2">
+                  <span className="text-xs text-slate-500">Preview page:</span>
+                  <div className="flex gap-1 flex-wrap">
+                    {pdfFiles.map((f, i) => (
+                      <button
+                        key={i}
+                        onClick={() => setPreviewPdfIndex(i)}
+                        className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
+                          previewPdfIndex === i
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                        }`}
+                      >
+                        {i + 1}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <PositionControls
+              offsetX={offsetX}
+              offsetY={offsetY}
+              onOffsetXChange={setOffsetX}
+              onOffsetYChange={setOffsetY}
+              disabled={isProcessing}
+            />
+          </div>
+
+          <div className="space-y-5">
+            <FileUploader
+              title="Background Image (13 \u00d7 19 in)"
+              icon={Image}
+              accept=".jpg,.jpeg,.png"
+              multiple={false}
+              files={backgroundFile ? [backgroundFile] : []}
+              onFilesChange={files => setBackgroundFile(files[0] || null)}
+              disabled={isProcessing}
+            />
+
+            <FileUploader
+              title="PDF Cover Files"
+              icon={FileText}
+              accept=".pdf"
+              multiple={true}
+              files={pdfFiles}
+              onFilesChange={setPdfFiles}
+              disabled={isProcessing}
+            />
+
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 space-y-3">
+              <button
+                onClick={handleProcess}
+                disabled={isProcessing || pdfFiles.length === 0}
+                className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+              >
+                {isProcessing ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle className="w-5 h-5" />
+                    Generate PDF Bundle
+                  </>
+                )}
+              </button>
+
+              {downloadUrl && (
+                <a
+                  href={downloadUrl}
+                  download="book_covers_bundle.pdf"
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+                >
+                  <Download className="w-5 h-5" />
+                  Download PDF Bundle
+                </a>
+              )}
+
+              <button
+                onClick={handleReset}
+                disabled={isProcessing}
+                className="w-full bg-slate-100 hover:bg-slate-200 disabled:opacity-50 disabled:cursor-not-allowed text-slate-700 font-medium py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+              >
+                <RotateCcw className="w-4 h-4" />
+                Reset
+              </button>
+            </div>
+
+            <div className="bg-slate-50 rounded-xl border border-slate-200 p-5 text-xs text-slate-500 space-y-1">
+              <p className="font-medium text-slate-600 mb-2">Output specs</p>
+              <p>Canvas: 297 &times; 210 mm (A4 landscape)</p>
+              <p>Resolution: 300 DPI</p>
+              <p>Size: {CANVAS_W_PX.toLocaleString()} &times; {CANVAS_H_PX.toLocaleString()} px</p>
+              <p>PDF cover placed on right half</p>
+              <p>All processing runs locally in your browser</p>
+            </div>
+          </div>
+        </div>
+
+        {steps.length > 0 && (
+          <ProcessingStatus steps={steps} />
+        )}
+      </div>
+    </div>
+  );
+}
