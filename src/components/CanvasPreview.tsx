@@ -5,18 +5,18 @@ interface CanvasPreviewProps {
   pdfPageImage: HTMLImageElement | null;
   offsetX: number;
   offsetY: number;
+  canvasWMm: number;
+  canvasHMm: number;
   onCompositeReady?: (canvas: HTMLCanvasElement) => void;
 }
-
-const CANVAS_W_MM = 297;
-const CANVAS_H_MM = 210;
-const PDF_HALF_W_MM = 148.5;
 
 export default function CanvasPreview({
   backgroundImage,
   pdfPageImage,
   offsetX,
   offsetY,
+  canvasWMm,
+  canvasHMm,
   onCompositeReady,
 }: CanvasPreviewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -26,8 +26,8 @@ export default function CanvasPreview({
     if (!canvas) return;
 
     const previewW = canvas.offsetWidth || 800;
-    const scale = previewW / CANVAS_W_MM;
-    const previewH = Math.round(CANVAS_H_MM * scale);
+    const scale = previewW / canvasWMm;
+    const previewH = Math.round(canvasHMm * scale);
     canvas.width = previewW;
     canvas.height = previewH;
 
@@ -42,11 +42,10 @@ export default function CanvasPreview({
     }
 
     if (pdfPageImage) {
-      const pdfHalfW = Math.round(PDF_HALF_W_MM * scale);
-      const pdfH = previewH;
-      const pdfX = Math.round((CANVAS_W_MM / 2) * scale) + Math.round(offsetX * scale);
+      const halfW = Math.round((canvasWMm / 2) * scale);
+      const pdfX = halfW + Math.round(offsetX * scale);
       const pdfY = Math.round(offsetY * scale);
-      ctx.drawImage(pdfPageImage, pdfX, pdfY, pdfHalfW, pdfH);
+      ctx.drawImage(pdfPageImage, pdfX, pdfY, halfW, previewH);
     }
 
     ctx.strokeStyle = 'rgba(100,116,139,0.4)';
@@ -59,15 +58,13 @@ export default function CanvasPreview({
     ctx.setLineDash([]);
 
     if (onCompositeReady) onCompositeReady(canvas);
-  }, [backgroundImage, pdfPageImage, offsetX, offsetY, onCompositeReady]);
+  }, [backgroundImage, pdfPageImage, offsetX, offsetY, canvasWMm, canvasHMm, onCompositeReady]);
 
   return (
     <canvas
       ref={canvasRef}
       className="w-full rounded-lg border border-slate-200 shadow-sm"
-      style={{ aspectRatio: `${CANVAS_W_MM}/${CANVAS_H_MM}`, display: 'block' }}
+      style={{ aspectRatio: `${canvasWMm}/${canvasHMm}`, display: 'block' }}
     />
   );
 }
-
-export { CANVAS_W_MM, CANVAS_H_MM, PDF_HALF_W_MM };

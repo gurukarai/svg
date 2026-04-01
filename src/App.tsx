@@ -3,8 +3,10 @@ import { FileText, Image as ImageIcon, Download, CheckCircle, Loader2, RotateCcw
 import * as pdfjsLib from 'pdfjs-dist';
 import FileUploader from './components/FileUploader';
 import ProcessingStatus from './components/ProcessingStatus';
-import CanvasPreview, { CANVAS_W_MM, CANVAS_H_MM, PDF_HALF_W_MM } from './components/CanvasPreview';
+import CanvasPreview from './components/CanvasPreview';
 import PositionControls from './components/PositionControls';
+import ConfigPanel from './components/ConfigPanel';
+import { getPaperSize, DEFAULT_PAPER_SIZE_ID } from './lib/paperSizes';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.mjs',
@@ -19,9 +21,6 @@ interface ProcessingStep {
 
 const DPI = 300;
 const MM_TO_INCH = 1 / 25.4;
-const CANVAS_W_PX = Math.round(CANVAS_W_MM * MM_TO_INCH * DPI);
-const CANVAS_H_PX = Math.round(CANVAS_H_MM * MM_TO_INCH * DPI);
-const PDF_HALF_W_PX = Math.round(PDF_HALF_W_MM * MM_TO_INCH * DPI);
 
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -66,9 +65,7 @@ function removeWhiteBackground(src: HTMLImageElement): Promise<HTMLImageElement>
   const canvas = document.createElement('canvas');
   const w = src.naturalWidth || src.width;
   const h = src.naturalHeight || src.height;
-  if (w === 0 || h === 0) {
-    return Promise.resolve(src);
-  }
+  if (w === 0 || h === 0) return Promise.resolve(src);
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext('2d')!;
@@ -76,15 +73,10 @@ function removeWhiteBackground(src: HTMLImageElement): Promise<HTMLImageElement>
   const imageData = ctx.getImageData(0, 0, w, h);
   const data = imageData.data;
   for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const g = data[i + 1];
-    const b = data[i + 2];
-    if (r > 240 && g > 240 && b > 240) {
-      data[i + 3] = 0;
-    }
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    if (r > 240 && g > 240 && b > 240) data[i + 3] = 0;
   }
   ctx.putImageData(imageData, 0, 0);
-
   return new Promise((resolve, reject) => {
     const result = new window.Image();
     result.onload = () => resolve(result);
@@ -97,26 +89,30 @@ async function renderComposite(
   backgroundImage: HTMLImageElement | null,
   pdfPageImage: HTMLImageElement | null,
   offsetX: number,
-  offsetY: number
+  offsetY: number,
+  canvasWMm: number,
+  canvasHMm: number,
 ): Promise<Blob> {
+  const canvasWPx = Math.round(canvasWMm * MM_TO_INCH * DPI);
+  const canvasHPx = Math.round(canvasHMm * MM_TO_INCH * DPI);
+  const halfWPx = Math.round((canvasWMm / 2) * MM_TO_INCH * DPI);
+
   const canvas = document.createElement('canvas');
-  canvas.width = CANVAS_W_PX;
-  canvas.height = CANVAS_H_PX;
+  canvas.width = canvasWPx;
+  canvas.height = canvasHPx;
   const ctx = canvas.getContext('2d')!;
 
   ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, CANVAS_W_PX, CANVAS_H_PX);
+  ctx.fillRect(0, 0, canvasWPx, canvasHPx);
 
   if (backgroundImage) {
-    ctx.drawImage(backgroundImage, 0, 0, CANVAS_W_PX, CANVAS_H_PX);
+    ctx.drawImage(backgroundImage, 0, 0, canvasWPx, canvasHPx);
   }
 
   if (pdfPageImage) {
     const offsetXpx = Math.round(offsetX * MM_TO_INCH * DPI);
     const offsetYpx = Math.round(offsetY * MM_TO_INCH * DPI);
-    const pdfX = PDF_HALF_W_PX + offsetXpx;
-    const pdfY = offsetYpx;
-    ctx.drawImage(pdfPageImage, pdfX, pdfY, PDF_HALF_W_PX, CANVAS_H_PX);
+    ctx.drawImage(pdfPageImage, halfWPx + offsetXpx, offsetYpx, halfWPx, canvasHPx);
   }
 
   return new Promise((resolve, reject) => {
@@ -127,9 +123,11 @@ async function renderComposite(
   });
 }
 
-async function buildPdfBundle(jpegBlobs: Blob[]): Promise<Blob> {
-  const pdfWidth = Math.round(CANVAS_W_MM * (72 / 25.4));
-  const pdfHeight = Math.round(CANVAS_H_MM * (72 / 25.4));
+async function buildPdfBundle(jpegBlobs: Blob[], canvasWMm: number, canvasHMm: number): Promise<Blob> {
+  const pdfWidth = Math.round(canvasWMm * (72 / 25.4));
+  const pdfHeight = Math.round(canvasHMm * (72 / 25.4));
+  const canvasWPx = Math.round(canvasWMm * MM_TO_INCH * DPI);
+  const canvasHPx = Math.round(canvasHMm * MM_TO_INCH * DPI);
 
   const imgByteArrays: Uint8Array[] = await Promise.all(
     jpegBlobs.map(blob => blob.arrayBuffer().then(buf => new Uint8Array(buf)))
@@ -146,10 +144,7 @@ async function buildPdfBundle(jpegBlobs: Blob[]): Promise<Blob> {
     byteOffset += typeof data === 'string' ? enc.encode(data).length : data.byteLength;
   };
 
-  const beginObj = (n: number) => {
-    objOffsets[n] = byteOffset;
-    addBytes(`${n} 0 obj\n`);
-  };
+  const beginObj = (n: number) => { objOffsets[n] = byteOffset; addBytes(`${n} 0 obj\n`); };
   const endObj = () => addBytes(`endobj\n`);
 
   addBytes(`%PDF-1.4\n%\xFF\xFF\xFF\xFF\n`);
@@ -182,7 +177,7 @@ async function buildPdfBundle(jpegBlobs: Blob[]): Promise<Blob> {
     const imgData = imgByteArrays[i];
     beginObj(imgObj);
     addBytes(
-      `<< /Type /XObject /Subtype /Image /Width ${CANVAS_W_PX} /Height ${CANVAS_H_PX}\n` +
+      `<< /Type /XObject /Subtype /Image /Width ${canvasWPx} /Height ${canvasHPx}\n` +
       `/ColorSpace /DeviceRGB /BitsPerComponent 8\n` +
       `/Filter /DCTDecode /Length ${imgData.byteLength} >>\n` +
       `stream\n`
@@ -208,16 +203,11 @@ async function buildPdfBundle(jpegBlobs: Blob[]): Promise<Blob> {
   addBytes(`xref\n0 ${totalObjs + 1}\n${xrefEntries.join('')}`);
   addBytes(`trailer\n<< /Size ${totalObjs + 1} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF\n`);
 
-  const allBytes: Uint8Array[] = parts.map(p =>
-    typeof p === 'string' ? enc.encode(p) : p
-  );
+  const allBytes: Uint8Array[] = parts.map(p => typeof p === 'string' ? enc.encode(p) : p);
   const totalLen = allBytes.reduce((s, b) => s + b.byteLength, 0);
   const out = new Uint8Array(totalLen);
   let pos = 0;
-  for (const b of allBytes) {
-    out.set(b, pos);
-    pos += b.byteLength;
-  }
+  for (const b of allBytes) { out.set(b, pos); pos += b.byteLength; }
 
   return new Blob([out], { type: 'application/pdf' });
 }
@@ -230,24 +220,25 @@ export default function App() {
   const [previewPdfIndex, setPreviewPdfIndex] = useState(0);
   const [offsetX, setOffsetX] = useState(0);
   const [offsetY, setOffsetY] = useState(0);
+  const [paperSizeId, setPaperSizeId] = useState(DEFAULT_PAPER_SIZE_ID);
   const [isProcessing, setIsProcessing] = useState(false);
   const [steps, setSteps] = useState<ProcessingStep[]>([]);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const compositeCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  const paperSize = getPaperSize(paperSizeId);
+  const canvasWMm = paperSize.widthMm;
+  const canvasHMm = paperSize.heightMm;
+  const canvasWPx = Math.round(canvasWMm * MM_TO_INCH * DPI);
+  const canvasHPx = Math.round(canvasHMm * MM_TO_INCH * DPI);
+
   useEffect(() => {
-    if (!backgroundFile) {
-      setBackgroundImg(null);
-      return;
-    }
+    if (!backgroundFile) { setBackgroundImg(null); return; }
     readFileAsDataUrl(backgroundFile).then(url => loadImage(url)).then(setBackgroundImg);
   }, [backgroundFile]);
 
   useEffect(() => {
-    if (pdfFiles.length === 0) {
-      setPdfPreviewImg(null);
-      return;
-    }
+    if (pdfFiles.length === 0) { setPdfPreviewImg(null); return; }
     const idx = Math.min(previewPdfIndex, pdfFiles.length - 1);
     extractPdfFirstPage(pdfFiles[idx])
       .then(img => removeWhiteBackground(img))
@@ -262,10 +253,7 @@ export default function App() {
   };
 
   const handleProcess = async () => {
-    if (pdfFiles.length === 0) {
-      alert('Please upload at least one PDF file');
-      return;
-    }
+    if (pdfFiles.length === 0) { alert('Please upload at least one PDF file'); return; }
 
     setIsProcessing(true);
     setDownloadUrl(null);
@@ -292,8 +280,7 @@ export default function App() {
       updateStep(1, 'processing');
       const rawPageImages: HTMLImageElement[] = [];
       for (const pdfFile of pdfFiles) {
-        const img = await extractPdfFirstPage(pdfFile);
-        rawPageImages.push(img);
+        rawPageImages.push(await extractPdfFirstPage(pdfFile));
       }
       updateStep(1, 'complete');
 
@@ -305,18 +292,16 @@ export default function App() {
       updateStep(3, 'processing');
       const compositeBlobs: Blob[] = [];
       for (const pageImg of strippedImages) {
-        const blob = await renderComposite(bgImg, pageImg, offsetX, offsetY);
-        compositeBlobs.push(blob);
+        compositeBlobs.push(await renderComposite(bgImg, pageImg, offsetX, offsetY, canvasWMm, canvasHMm));
       }
       updateStep(3, 'complete');
 
       updateStep(4, 'processing');
-      const finalPdf = await buildPdfBundle(compositeBlobs);
+      const finalPdf = await buildPdfBundle(compositeBlobs, canvasWMm, canvasHMm);
       await new Promise(r => setTimeout(r, 200));
       updateStep(4, 'complete');
 
-      const url = URL.createObjectURL(finalPdf);
-      setDownloadUrl(url);
+      setDownloadUrl(URL.createObjectURL(finalPdf));
     } catch (error) {
       setSteps(prev => prev.map(step =>
         step.status === 'processing'
@@ -357,7 +342,7 @@ export default function App() {
             Book Cover Compositor
           </h1>
           <p className="text-slate-500 text-base">
-            Compose PDF covers onto a 297 &times; 210 mm (A4 landscape) print canvas at 300 DPI
+            Compose PDF covers onto a print canvas at 300 DPI
           </p>
         </header>
 
@@ -368,20 +353,22 @@ export default function App() {
                 Preview
               </h2>
               <p className="text-xs text-slate-400 mb-4">
-                Background (left) + PDF cover page (right) &mdash; dashed line marks the center fold
+                Background (left) + PDF cover page (right) — dashed line marks the center fold
               </p>
               <CanvasPreview
                 backgroundImage={backgroundImg}
                 pdfPageImage={pdfPreviewImg}
                 offsetX={offsetX}
                 offsetY={offsetY}
+                canvasWMm={canvasWMm}
+                canvasHMm={canvasHMm}
                 onCompositeReady={handleCompositeReady}
               />
               {pdfFiles.length > 1 && (
                 <div className="mt-3 flex items-center gap-2">
                   <span className="text-xs text-slate-500">Preview page:</span>
                   <div className="flex gap-1 flex-wrap">
-                    {pdfFiles.map((f, i) => (
+                    {pdfFiles.map((_f, i) => (
                       <button
                         key={i}
                         onClick={() => setPreviewPdfIndex(i)}
@@ -410,7 +397,7 @@ export default function App() {
 
           <div className="space-y-5">
             <FileUploader
-              title="Background Image (13 \u00d7 19 in)"
+              title="Background Image"
               icon={ImageIcon}
               accept=".jpg,.jpeg,.png"
               multiple={false}
@@ -426,6 +413,12 @@ export default function App() {
               multiple={true}
               files={pdfFiles}
               onFilesChange={setPdfFiles}
+              disabled={isProcessing}
+            />
+
+            <ConfigPanel
+              paperSizeId={paperSizeId}
+              onPaperSizeChange={setPaperSizeId}
               disabled={isProcessing}
             />
 
@@ -471,9 +464,10 @@ export default function App() {
 
             <div className="bg-slate-50 rounded-xl border border-slate-200 p-5 text-xs text-slate-500 space-y-1">
               <p className="font-medium text-slate-600 mb-2">Output specs</p>
-              <p>Canvas: 297 &times; 210 mm (A4 landscape)</p>
+              <p>Paper: {paperSize.label}</p>
+              <p>Canvas: {canvasWMm} × {canvasHMm} mm</p>
               <p>Resolution: 300 DPI</p>
-              <p>Size: {CANVAS_W_PX.toLocaleString()} &times; {CANVAS_H_PX.toLocaleString()} px</p>
+              <p>Size: {canvasWPx.toLocaleString()} × {canvasHPx.toLocaleString()} px</p>
               <p>PDF cover placed on right half</p>
               <p>All processing runs locally in your browser</p>
             </div>
