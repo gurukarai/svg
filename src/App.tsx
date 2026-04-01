@@ -43,7 +43,7 @@ function readFileAsDataUrl(file: File): Promise<string> {
 
 async function extractPdfFirstPage(pdfFile: File): Promise<HTMLImageElement> {
   const arrayBuffer = await pdfFile.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer, isEvalSupported: false, useSystemFonts: true }).promise;
   const page = await pdf.getPage(1);
 
   const viewport = page.getViewport({ scale: 3 });
