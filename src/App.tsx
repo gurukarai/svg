@@ -246,7 +246,7 @@ function renderSvgToPng(svgContent: string, width: number): Promise<Blob> {
     const svgBlob = new Blob([svgContent], { type: 'image/svg+xml' });
     const url = URL.createObjectURL(svgBlob);
 
-    const img = new Image();
+    const img = document.createElement('img');
     img.onload = () => {
       const canvas = document.createElement('canvas');
       canvas.width = width;
